@@ -63,7 +63,7 @@ sources:
           prefetchGlobs=prefetchGlobs,
           dateAfter=dateAfter,
           dateBefore=dateBefore,
-          binaryRegex='^(sc.exe|winrs.exe|schtasks.exe|reg.exe)',
+          binaryRegex='^(sc.exe|winrs.exe|schtasks.exe|reg.exe|at.exe)',
           hashRegex=hashRegex)
       },
       query={
