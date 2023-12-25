@@ -1,4 +1,4 @@
-name: Exchange.Windows.Timeline.Prefetch.Remote_Management_Tools
+name: Hasamba.Windows.Timeline.Prefetch.Remote_Management_Tools
 author: Matt Green - @mgreen27, Edited by Yaniv Radunsky - @hasamba
 description: |
   NOTE: This is a fixed version of Windows.Timeline.Prefetch which is
@@ -63,7 +63,7 @@ sources:
           prefetchGlobs=prefetchGlobs,
           dateAfter=dateAfter,
           dateBefore=dateBefore,
-          binaryRegex='^(sc.exe|winrs.exe|schtasks.exe|reg.exe|at.exe)',
+          binaryRegex='^(sc.exe|winrs.exe|schtasks.exe|reg.exe|at.exe|wmic.exe|scrcond.exe|mofcomp.exe|wmiprvse.exe|powershell.exe|wsmprovhost.exe)',
           hashRegex=hashRegex)
       },
       query={
