@@ -1,0 +1,73 @@
+name: Custom.Windows.EventLogs.Process.Creation
+
+description: |
+   If they are enabled, event ID 4688 Process Tracking events can be an extremely powerful information source. 
+    They show full path, execution time, account information (including session via Logon ID), and can now 
+    capture the full command line (SANS FOR508)
+
+author: Yaniv Radunsky @ 10root cyber security
+
+precondition: SELECT OS FROM info() WHERE OS = 'windows'
+
+parameters:
+  - name: EvtxGlob
+    default: '%SystemRoot%\System32\winevt\Logs\Security.evtx'
+  - name: VSSAnalysisAge
+    type: int
+    default: 0
+    description: |
+      If larger than zero we analyze VSS within this many days
+      ago. (e.g 7 will analyze all VSS within the last week).  Note
+      that when using VSS analysis we have to use the ntfs accessor
+      for everything which will be much slower.
+  - name: StartDate
+    type: timestamp
+    description: "Parse events on or after this date (YYYY-MM-DDTmm:hh:ssZ)"
+  - name: EndDate
+    type: timestamp
+    description: "Parse events on or before this date (YYYY-MM-DDTmm:hh:ssZ)"
+  - name: PathRegex
+    default: "."
+    type: regex
+  - name: ChannelRegex
+    default: "."
+    type: regex
+  - name: IDRegex
+    default: "^4688$"
+    type: regex
+
+sources:
+  - query: |
+      LET VSS_MAX_AGE_DAYS <= VSSAnalysisAge
+      LET Accessor = if(condition=VSSAnalysisAge > 0, then="ntfs_vss", else="auto")
+
+      // expand provided glob into a list of paths on the file system (fs)
+      LET fspaths =
+          SELECT OSPath FROM glob(globs=expand(path=EvtxGlob), accessor=Accessor)
+          WHERE OSPath =~ PathRegex
+
+      // function returning parsed evtx from list of paths
+      LET evtxsearch(pathList) = SELECT * FROM foreach(
+            row=pathList,
+            query={
+              SELECT *,
+                timestamp(epoch=int(int=System.TimeCreated.SystemTime)) AS TimeCreated,
+                System.Channel as Channel,
+                System.EventRecordID as EventRecordID,
+                System.EventID.Value as EventID,
+                OSPath
+              FROM parse_evtx(filename=OSPath, accessor=Accessor)
+              WHERE
+                if(condition=StartDate,
+                   then=TimeCreated >= timestamp(string=StartDate),
+                   else=true)
+                AND if(condition=EndDate,
+                       then=TimeCreated <= timestamp(string=EndDate),
+                       else=true)
+                AND Channel =~ ChannelRegex
+                AND str(str=EventID) =~ IDRegex
+            }
+          )
+
+      SELECT * FROM evtxsearch(pathList=fspaths)
+      GROUP BY EventRecordID, Channel
