@@ -1,0 +1,68 @@
+name: Custom.Windows.System.Powershell.PSReadline.QuickWins
+description: |
+  . A good list of keywords to start searching for in powershell history. Each one of these keywords can be obfuscated by attackers, but usually one or more will provide solid hits, particularly since PowerShell logging also often includes the unobfuscated version of scripts. Just like hunting using other artifacts, defenders have to continually be creative (SANS FOR508)
+
+
+author: Yaniv Radunsky @ 10root cyber security
+
+reference:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://0xdf.gitlab.io/2018/11/08/powershell-history-file.html
+
+type: CLIENT
+
+parameters:
+  - name: ConsoleHostHistory
+    default: \AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
+  - name: SearchStrings
+    default: download|start-process|frombase64string|powershell -version|iex|invoke-expression|webclient|invoke-wmimethod|rundll32|invoke-command|bitstransfer|invoke-cimmethod|http|syswow64|refletion
+    type: regex
+  - name: StringWhiteList
+    default:
+    type: regex
+  - name: UserRegex
+    default: .
+    type: regex
+  - name: UploadFiles
+    description: "Upload ConsoleHost_history.txt files in scope"
+    type: bool
+
+precondition:
+  SELECT OS From info() where OS = 'windows'
+
+sources:
+  - query: |
+        -- First extract target ConsoleHost_history path for each user
+        LET targets = SELECT Name as Username,
+           { SELECT Mtime, Atime, Ctime, Btime, Size, OSPath
+             FROM stat(filename=expand(path=Directory) + ConsoleHostHistory)
+           } AS Stat
+        FROM Artifact.Windows.Sys.Users()
+        WHERE Directory and Username =~ UserRegex AND Stat.OSPath
+
+        -- Extract targets PSReadline entries
+        SELECT * FROM foreach(
+        row=targets,
+        query={
+            SELECT Stat, count() AS LineNum,
+                   Line,
+                   Username,
+                   Stat.OSPath AS OSPath
+            FROM parse_lines(filename=Stat.OSPath)
+            WHERE LineNum
+             AND Line =~ SearchStrings
+             AND NOT if(condition=StringWhiteList,
+                        then=Line =~ StringWhiteList,
+                        else=FALSE)
+        })
+
+  - name: Upload
+    query: |
+        -- if configured upload ConsoleHost_history.txt in results
+        SELECT * FROM if(condition=UploadFiles,
+            then={
+                SELECT
+                    Username,
+                    upload(file=Stat.OSPath) as ConsoleHost_history
+                FROM targets
+            })
