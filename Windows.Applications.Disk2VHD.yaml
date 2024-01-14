@@ -1,0 +1,35 @@
+name: Windows.Applications.Disk2VHD
+description: |
+    Create an image using Sysinternals Disk2VHD
+
+author: Yaniv Radunsky @ 10root cyber security
+
+reference:
+  - https://learn.microsoft.com/en-us/sysinternals/downloads/disk2vhd
+
+type: CLIENT
+
+tools:
+  - name: disk2vhd
+    url: https://live.sysinternals.com/tools/disk2vhd64.exe
+
+precondition: SELECT OS From info() where OS = 'windows'
+
+parameters:
+  - name: OutputPath
+    default: "\\\\192.168.10.136:5000\\Share\\comp.vhd"
+    description: "(Enter full path with output filename with extention, can be UNC)"
+
+
+sources:
+  - query: |
+      -- get context on target binary
+      LET Tool <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="disk2vhd", IsExecutable=TRUE, TemporaryOnly=TRUE)
+
+
+      LET Exe <= 'disk2vhd64.exe' 
+      LET cmdline <= (Exe, "-accepteula -c *", OutputPath)
+
+      -- execute payload
+       SELECT * FROM execve(argv=[Tool[0].OSPath, "-accepteula", "-c", "*", OutputPath], sep="\n")
