@@ -1,0 +1,30 @@
+name: Custom.rUnAtOoL
+description: Run an arbitrary tool and read the output
+
+# you should upload the tool via the tool configuration page BEFORE
+# using the artifact.
+tools:
+  - name: whatevertool
+    serve_locally: true
+
+parameters:
+  - name: tool_parameters
+    friendly_name: Tool parameters
+    description: |
+        A list of tool parameters. This will be converted to an
+        array and passed to execve()
+    type: csv
+    default: |
+      parameter
+      -accepteula
+      -c
+      *
+      \\192.168.10.136:5000\Share\comp.vhd
+
+sources:
+  - query: |
+      LET Tool <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="whatevertool", IsExecutable=TRUE, TemporaryOnly=TRUE)
+      LET Parameters <= tool_parameters.parameter
+      LET Args <= Tool[0].OSPath + Parameters
+      SELECT * FROM execve(argv=Args, sep="\n")
