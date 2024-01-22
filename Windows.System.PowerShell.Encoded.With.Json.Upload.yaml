@@ -1,5 +1,8 @@
 name: Custom.Windows.System.PowerShell.Encoded.With.Json.Upload
 description: |
+  Encode the command with cyberchef in 2 steps:
+    1. "Encode text" -> encoding = UTF-16LE (1200)
+    1. "To Base64"
   This artifact allows running arbitrary commands through the system
   powershell.
 
