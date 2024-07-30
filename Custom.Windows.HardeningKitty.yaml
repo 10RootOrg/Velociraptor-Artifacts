@@ -1,0 +1,66 @@
+name: Exchange.Windows.HardeningKitty
+description: HardeningKitty supports hardening of a Windows system. The configuration of the system is retrieved and assessed using a finding list. In addition, the system can be hardened according to predefined values. HardeningKitty reads settings from the registry and uses other modules to read configurations outside the registry.
+    Custom lists can be created at https://phi.cryptonit.fr/policies_hardening_interface/interface/windows/
+
+author: Yaniv Radunsky & Nof Levi @ 10root cyber security
+tools:
+ - name: HardeningKitty
+   url: https://github.com/0x6d69636b/windows_hardening/archive/refs/tags/v.0.9.2.zip
+type: Client
+
+precondition: 
+    SELECT OS From info() where OS = 'windows'
+
+parameters:
+ - name: TakeBackUp
+   description: "Check if you want to run a backup. Uncheck to run normally!"
+   default: N
+   type: bool
+
+ - name: Baseline
+   description: "Choose kitty Baseline!"
+   default: finding_list_0x6d69636b_machine
+     
+sources:
+ - query: |
+        LET Toolzip <= SELECT FullPath FROM Artifact.Generic.Utils.FetchBinary(ToolName="HardeningKitty", IsExecutable=FALSE)
+
+        LET TmpDir <= tempdir()
+
+        LET _ <= SELECT * FROM unzip(filename=Toolzip.FullPath, output_directory=TmpDir)
+
+
+        LET backUpHolder = format(format='Set-Location "%s"; Import-Module ".\\windows_hardening-*\\HardeningKitty.psm1"; Invoke-HardeningKitty -Mode Config -Backup -BackupFile ".\\myBackUp.csv"', args=TmpDir)
+        
+        LET normalHolder = format(format='Set-Location "%s"; Import-Module ".\\windows_hardening-*\\HardeningKitty.psm1"; Invoke-HardeningKitty -FileFindingList ".\\windows_hardening-*\\lists\\finding_list_0x6d69636b_machine.csv" -SkipMachineInformation -Mode Audit -Report -ReportFile ".\\kitty.csv";', args=TmpDir)
+        
+        LET PowershellCommand = if(condition=TakeBackUp,
+        then= backUpHolder,
+        else= normalHolder
+        )
+        
+        LET CommandOutput <= SELECT * FROM execve(argv=["Powershell", "-ExecutionPolicy",
+                "unrestricted", "-Command", PowershellCommand], length=1000000)
+
+
+        LET backUpName = TmpDir + "\\myBackUp.csv"
+        LET normalName = TmpDir + "\\kitty.csv"
+        LET CsvFile = if(condition=TakeBackUp,
+        then= backUpName,
+        else= normalName
+        )
+        
+        
+        
+
+        LET CsvFileExists <= SELECT * FROM glob(globs=CsvFile)
+
+        //SELECT Hostname FROM info()
+
+        //SELECT Stdout, Stderr FROM CommandOutput
+
+        SELECT * FROM parse_csv(filename=CsvFile) WHERE CsvFileExists
+        //SELECT * FROM parse_csv(filename=CsvFile) 
+
+
+
