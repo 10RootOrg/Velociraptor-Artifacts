@@ -1,0 +1,148 @@
+name: Client.Windows.Sigcheck
+author: Nir Halfon (IONSEC.IO)
+description: |
+  This VQL artifact, `Client.Windows.Sigcheck`, leverages the powerful Sysinternals Sigcheck utility to provide a thorough examination of files within your Windows endpoints. Sigcheck is renowned for its capability to verify file version numbers, assess digital signatures, catalog certificate information, and much more. When executed, this artifact scans specified locations on the endpoint, offering detailed insights into the security and integrity of files.
+
+  A distinctive feature of this artifact is its integration with VirusTotal, allowing for an additional layer of analysis. By querying VirusTotal with file hashes, it provides an added dimension of malware detection and security assessment, making it an indispensable tool for incident response and security auditing.
+
+  The artifact is configured to perform scans both non-recursively and recursively across critical system and user directories. It is tailored to prioritize executable images for scanning by default, ensuring a focused approach to security analysis. This customization, coupled with the capacity to scan various system paths and the Recycle Bin, ensures a comprehensive coverage of the endpoint's file system.
+
+  By deploying this VQL artifact, security practitioners can leverage Sigcheck's capabilities at scale across their infrastructure, enhancing their ability to swiftly detect, analyze, and respond to potential security threats. The integration with VirusTotal enriches this process, offering broader insights into file reputations and malware associations. This tool is a valuable addition to the security toolkit, facilitating a deeper understanding of endpoint security and aiding in the proactive management of digital threats.
+reference:
+   - https://www.ionsec.io
+
+resources:
+  timeout: 9999999
+  cpu_limit: 100
+  max_rows: 999999999
+  max_upload_bytes: 99999999999
+
+tools:
+  - name: sigcheck_amd64
+    url: https://live.sysinternals.com/tools/sigcheck64.exe
+    expected_hash: 5d9e06ba65bb4d365e98fbb468f44fa8926f05984bf1a77ec7b1df19c43dc5ef
+    filename: sigcheck64.exe
+    serve_locally: true
+
+  - name: sigcheck_386
+    url: https://live.sysinternals.com/tools/sigcheck.exe
+    expected_hash: 4fe9a2bd4b160a5352333d00d0b0c10f13685af7acdb48e9e9d0c3877a19eed4
+    filename: sigcheck.exe
+    serve_locally: true
+
+parameters:
+  - name: "-e"
+    description: "Scan executable images only (regardless of their extension)"
+    type: bool
+    default: Y
+  - name: "-vt"
+    description: "Query VirusTotal (www.virustotal.com) for malware based on file hash."
+    type: bool
+    default: Y
+  - name: ToolInfo
+    type: hidden
+    description: Override Tool information.
+  
+  - name: nonrecurse_paths
+    friendly_name: Non-recursive Paths
+    description: A list of paths to scan non-recursively
+    type: csv
+    default: |
+      path
+      c:\windows\system32
+      c:\windows\syswow64
+      c:\windows\temp
+      c:\windows\inf
+      c:\windows
+      c:\windows\system32\config
+      c:\perflog
+      c:\windows\fonts
+      c:\windows\ime
+      c:\windows\security
+      c:\windows\system32\ime
+
+  - name: recurse_paths
+    friendly_name: Recursive Paths
+    description: A list of paths to scan recursively
+    type: csv
+    default: |
+      path
+      c:\programdata
+      c:\users
+
+  - name: recycle_bin
+    friendly_name: Recycle Bin
+    description: Recycle bin symlink scan
+    type: csv
+    default: |
+      path
+      c:\$recycle.bin
+
+sources:
+
+  - precondition: SELECT * FROM info() WHERE OS = "windows" AND Architecture =~ "amd64|arm64|386"
+    query: |
+      LET Flags = '''Option,Name
+      -e,Scan executable images only (regardless of their extension)
+      -vt,Query VirusTotal (www.virustotal.com) for malware based on file hash.
+      '''
+
+      -- The flags actually selected
+      LET flags = SELECT Option FROM parse_csv(accessor="data", filename=Flags)
+        WHERE get(field=Option)
+
+      -- We get the arch from info so that we can select the appropriate tool binary
+      LET os_info <= SELECT * FROM info()
+
+      -- Create a temp dir for the tool output files
+      LET temp_dir <= tempdir(remove_last=TRUE)
+      -- Output file
+      LET output_file <=  path_join(components=[temp_dir, "SigcheckOutput.csv"])
+      -- Alternative output file name (uncomment next line if desired and comment the previous line)
+      -- LET output_file <= path_join(components=[temp_dir, os_info[0].Hostname + "_" + serialize(item=now()) + ".csv"])
+
+      -- Fetch SigCheck binary for the appropriate architecture
+      LET binary <= SELECT * FROM Artifact.Generic.Utils.FetchBinary(
+                                                                    ToolName= "sigcheck_" + os_info[0].Architecture,
+                                                                    IsExecutable=TRUE,
+                                                                    SleepDuration=5)
+
+      -- Preconfigured command line options
+   
+      LET options_nonrecurse <= (binary[0].OSPath, "-accepteula", "-nobanner", "-a", "-h", "-c")
+      LET options_recurse <= (binary[0].OSPath, "-accepteula", "-nobanner", "-a", "-h", "-c", "-s")
+      LET options_recycle_bin <= (binary[0].OSPath, "-accepteula", "-nobanner", "-a", "-h","-l", "-c", "-s")
+
+      -- Build a list of run targets, for each set of parameters, and then combine them into 1 set.
+      LET runs_nonrecurse <= if(condition=len(list=nonrecurse_paths) > 0,
+                      then={ SELECT * FROM foreach(row=nonrecurse_paths,
+                                           query={SELECT options_nonrecurse + array(b=flags.Option) + array(a=path) AS Target FROM scope()}) })
+      LET runs_recurse <= if(condition=len(list=recurse_paths) > 0,
+                      then={ SELECT * FROM foreach(row=recurse_paths,
+                                           query={SELECT options_recurse + array(b=flags.Option) + array(a=path) AS Target FROM scope()}) })
+      LET runs_recycle_bin <= if(condition=len(list=recycle_bin) > 0,
+                      then={ SELECT * FROM foreach(row=recycle_bin,
+                                           query={SELECT options_recycle_bin + array(b=flags.Option) + array(a=path) AS Target FROM scope()}) })
+      LET runs <= SELECT * FROM chain(a={ SELECT * FROM runs_nonrecurse },
+                                      b={ SELECT * FROM runs_recurse },
+                                      c={ SELECT * FROM runs_recycle_bin })
+
+      -- Run the tool against all the targets
+      LET do_runs = SELECT * FROM foreach(row=runs.Target,
+                                          query={ SELECT * FROM execve(argv=_value, length=99999999) }, workers=4)
+
+      -- Main
+      SELECT * FROM chain(
+        -- parse the CSV data so that it's usable in Velociraptor
+        a={ SELECT * FROM foreach(row=do_runs.Stdout, query={ SELECT *
+        FROM parse_csv(filename=_value, accessor="data") })
+        WHERE NOT Path =~ "No matching files were found" AND log(message="Parsing CSV data",level="DEBUG")})
+
+    notebook:
+      - type: vql
+        template: |
+          /*
+          #### Unsigned
+          */
+
+          SELECT * FROM source() WHERE Verified = "Unsigned"
