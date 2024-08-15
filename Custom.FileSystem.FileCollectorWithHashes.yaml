@@ -1,0 +1,27 @@
+name: Custom.FileSystem.FileCollectorWithHashes
+description: |
+       This artifact collects metadata from all files on a Linux machine,
+       including name, full path, creation date, modification date, hash.
+       It can optionally scan a specific directory; otherwise, it scans the entire filesystem.
+
+type: CLIENT
+
+parameters:
+   - name: Directory
+     default: '/'
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows' OR OS = 'linux'
+
+    query: |
+      SELECT
+        Name,
+        OSPath,
+        Size,
+        Mode.String AS Mode,
+        Ctime AS CreateTime,
+        Mtime AS ModifyTime,
+        hash(path=OSPath).SHA256 AS Hash 
+      FROM glob(globs='**1000', root=Directory, accessor="file", recursion_callback="x=>NOT x.OSPath =~ '^/(proc|snap)'")
+      WHERE NOT IsDir AND NOT IsLink AND Size > 0
