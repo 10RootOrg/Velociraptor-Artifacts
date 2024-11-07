@@ -1,0 +1,170 @@
+name: Custom.Windows.MSRT
+description: |
+            This artifact runs the Microsoft Malicious Software Removal Tool (MSRT) to scan the system for specific prevalent malware as defined by the most recent version of MSRT. MSRT is a security utility that scans computers running Windows and helps remove infections by specific, prevalent malicious software. This artifact is designed to execute MSRT in full scan mode and capture the output for forensic or monitoring purposes.
+            
+            By default, the artifact utilizes the local version of MSRT installed on the system. If a local version is not present, it temporarily downloads the latest version of MSRT and executes it to ensure that the scan is performed with the most current malware definitions and capabilities provided by Microsoft.
+            
+            To maintain the effectiveness of this tool, it is important to ensure that the local version of MSRT and the version maintained within this Velociraptor tool are kept up to date. Regular updates ensure consistency in malware detection capabilities across the organization and minimize the risk of missing infections due to outdated signatures or software versions.
+            
+            Administrators are encouraged to regularly verify the version status of MSRT on all systems and within the Velociraptor tool itself to ensure compliance with the latest security standards and to maintain the highest level of defense against new and evolving malware threats.
+            https://www.microsoft.com/en-us/download/details.aspx?id=9905
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
+type: CLIENT
+
+parameters:
+
+
+tools:
+  - name: MSRT
+    url: https://download.microsoft.com/download/2/C/5/2C563B99-54D9-4D85-A82B-45D3CD2F53CE/Windows-KB890830-x64-V5.129.exe
+
+
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows' 
+
+    query: |
+      LET TmpDir <= tempdir(remove_last='Y')
+      LET MSRTTool <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="MSRT", IsExecutable=true, TemporaryOnly=TRUE)
+
+      LET MSRTResultsCsv <= path_join(
+           components=[TmpDir, 'MSRTResults.csv'],
+           path_type='windows')
+      
+      LET MSRTRunSc <= ''' 
+                        # PowerShell script to find and run Microsoft's Malicious Software Removal Tool with fallback to an alternate path using /Q and /N flags
+                        
+                        
+                        $defaultMRTPath = Join-Path -Path $env:SystemRoot -ChildPath "System32\mrt.exe"
+                        $alternateMRTPath = "'''
+                        + MSRTTool[0].OSPath+
+                        '''"  
+                        # Function to run MSRT
+                        function Run-MRT {
+                            param (
+                                [string]$Path
+                            )
+                            if (Test-Path -Path $Path) {
+                                Write-Host "Running MSRT from: $Path with /Q and /N flags"
+                                Start-Process -FilePath $Path -ArgumentList "/Q /N" -Wait
+                                Write-Host "MSRT execution completed."
+                            } else {
+                                Write-Host "MSRT is not present at: $Path"
+                            }
+                        }
+                        
+                        # Check if MSRT is present at the default location
+                        if (Test-Path -Path $defaultMRTPath) {
+                            Run-MRT -Path $defaultMRTPath
+                        } else {
+                            Write-Host "MSRT not found at the default location: $defaultMRTPath"
+                            Write-Host "Attempting to run MSRT from alternate location: $alternateMRTPath"
+                        
+                            # Run MSRT from the alternate location
+                            Run-MRT -Path $alternateMRTPath
+                        }
+
+                        '''
+           
+      Let MSRTParser = '''                       
+                # Define the path to the MSRT log file and output CSV
+                $logPath = "$env:windir\debug\mrt.log"
+                $outputCSV = "'''
+                +MSRTResultsCsv.String+
+                
+               '''" 
+                $scanResults = @()
+                $processedEntries = @{}  # Use a hashtable instead of an array
+                
+                if (Test-Path -Path $logPath) {
+                    $logContent = Get-Content -Path $logPath -Raw
+                    
+                    # Append delimiter to handle last entry if missing
+                    if (-not $logContent.EndsWith("---------------------------------------------------------------------------------------")) {
+                        $logContent += "---------------------------------------------------------------------------------------"
+                    }
+                    
+                    $logEntries = $logContent -split "---------------------------------------------------------------------------------------"
+                
+                    foreach ($entry in $logEntries) {
+                        if ($entry.Trim()) {
+                            $date = ""
+                            $version = ""
+                            $resultSummary = ""
+                            $returnCode = ""
+                
+                            if ($entry -match "Microsoft Windows Malicious Software Removal Tool v([^\n]+)") {
+                                $version = $matches[1].Trim()
+                            }
+                
+                            if ($entry -match "Started On (.+)") {
+                                $date = $matches[1].Trim()
+                            }
+                
+                            if ($entry -match "Results Summary:\s*([-]+\s*(.|\r|\n)*?)Return code") {
+                                $resultSummary = $matches[1].Trim() -replace '[-]+', ''  # Clean up the summary to remove dashes
+                            }
+                
+                            if ($entry -match "Return code: ([0-9x]+)") {
+                                $returnCode = $matches[1].Trim()
+                            }
+                
+                            $foundEntries = ($resultSummary -split '(?=Found)').Where({ $_.Trim() -ne '' })
+                
+                            foreach ($foundEntry in $foundEntries) {
+                                $found = "No infection found"
+                                $filesInfectedNum = 0
+                                $filesInfected = "Not specified"
+                                $filesCleaned = 0
+                
+                                if ($foundEntry -match "Found\s+(.*?):") {
+                                    $found = $matches[1].Trim()
+                                }
+                                if ($foundEntry -match "Files Infected: (\d+) \((.*?)\)") {
+                                    $filesInfectedNum = $matches[1].Trim()
+                                    $filesInfected = $matches[2].Trim()
+                                } elseif ($foundEntry -match "Files Infected: (\d+)") {
+                                    $filesInfectedNum = $matches[1].Trim()
+                                    $filesInfected = "Not specified"
+                                }
+                                if ($foundEntry -match "Files Cleaned: (\d+)") {
+                                    $filesCleaned = $matches[1].Trim()
+                                }
+                
+                                $uniqueKey = "$date-$found-$returnCode"  # Create a unique composite key
+                
+                                if (-not $processedEntries.ContainsKey($uniqueKey)) {
+                                    $processedEntries[$uniqueKey] = $true
+                
+                                    $scanResults += [PSCustomObject]@{
+                                        Date = $date
+                                        Version = $version
+                                        ResultSummary = $resultSummary
+                                        Found = $found
+                                        FilesInfectedNum = $filesInfectedNum
+                                        FilesInfected = $filesInfected
+                                        FilesCleaned = $filesCleaned
+                                        ReturnCode = $returnCode
+                                    }
+                                }
+                            }
+                        }
+                    }
+                
+                    $scanResults | Export-Csv -Path $outputCSV -NoTypeInformation -Encoding UTF8
+                    Write-Output "Scan results have been saved to $outputCSV"
+                } else {
+                    Write-Output "MSRT log file not found at $logPath"
+                }
+
+            '''     
+
+      LET ps1 <= tempfile(extension=".ps1", data=MSRTParser)
+      LET __cd <= SELECT * FROM execve(argv=["Powershell",MSRTRunSc])
+      LET __PW <= SELECT * FROM execve(argv=["Powershell",  MSRTParser ])
+      LET __PW <= SELECT * FROM execve(argv=["Powershell",  '''Remove-Item -Path "$env:windir\debug\mrt.log"'''])
+   
+      select * FROM parse_csv(filename=MSRTResultsCsv.String)
