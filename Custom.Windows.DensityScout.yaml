@@ -1,0 +1,101 @@
+name: Custom.Windows.DensityScout 
+description: |
+   
+    DensityScout is a security tool developed by CERT.at designed to assist in forensic investigations and malware analysis. It scans files on a target system to identify potentially malicious files based on their entropy (density) levels. Files with higher entropy scores may contain encrypted or packed data, a common trait in malware, making them stand out from typical files.
+    
+    The tool is effective for quickly highlighting files that could be associated with malware due to unusual density, especially useful in environments where rapid detection is critical. DensityScout is a lightweight, command-line utility that provides a detailed output of analyzed files, including their entropy scores, paths, and sizes. It’s suitable for experienced security professionals who need to triage or investigate systems for malware or anomalies without a full endpoint detection suite.    
+    
+    When used as an artifact in Velociraptor, DensityScout enables automated file entropy analysis across endpoints in a network, helping identify files with suspicious characteristics remotely and at scale. This integration allows for efficient detection and investigation of potential malware or anomalous files, leveraging Velociraptor's capabilities for centralized forensic analysis and response. The tool’s integration with Velociraptor is particularly useful for security teams looking to streamline malware hunting and forensic processes.
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
+type: CLIENT
+
+parameters:
+  - name: RecursiveRun
+    default: true
+    type: bool
+  - name: Density 
+    default: 0.1
+  - name: FileSuffix 
+    default: ""
+    description: "Filetypes you wish to scan write as exe,dll,cpl "
+  - name: StartPosition 
+    default: "c:\\Windows\\System32" 
+    description: "Starting Postion Of Scan"
+    
+tools:
+  - name: DensityScout
+    url: https://www.cert.at/media/files/downloads/software/densityscout/files/densityscout_build_45_windows.zip
+
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows' 
+
+    query: |
+       LET TmpDir <= tempdir(remove_last='Y')
+
+       LET DensityScoutZip <= SELECT FullPath
+         FROM Artifact.Generic.Utils.FetchBinary(ToolName="DensityScout", IsExecutable=FALSE, TemporaryOnly=TRUE)
+       LET _ <= SELECT *
+         FROM unzip(filename=DensityScoutZip.FullPath, output_directory=TmpDir)
+
+
+       LET DensityScoutResTool = path_join(
+           components=[TmpDir,  'win64','densityscout.exe'],
+           path_type='windows')
+           
+       LET DensityScoutResTXT = path_join(
+           components=[TmpDir,  'DensityScoutRes.txt'],
+           path_type='windows')     
+           
+       LET DensityScoutResCSV = path_join(
+           components=[TmpDir,  'DensityScoutRes.csv'],
+           path_type='windows')      
+           
+       LET DesnParse <= '''
+                  
+                    $inputFile = "''' + DensityScoutResTXT.String
+                    +  '''"
+                    
+                    $outputCsvFile = "'''+DensityScoutResCSV.String +
+                    '''"
+                    
+                   
+                    if (-Not (Test-Path -Path $inputFile)) {
+                        Write-Host "File does not exist."
+                        return
+                    }
+                    
+              
+                    $outputData = @()
+                    
+             
+                    Get-Content $inputFile | ForEach-Object {
+                        $parts = $_ -split '\|' # Split the line into parts based on '|'
+                        $density = $parts[0].Trim() -replace '-', '' # Remove dashes and trim any extra spaces
+                        $fileName = $parts[1].Trim() # Get the file name and trim any extra spaces
+                    
+                 
+                        $outputData += [PSCustomObject]@{
+                            Density = $density
+                            FileName = $fileName
+                        }
+                    }
+                    $outputData | Select-Object -First 5 | Format-Table -AutoSize
+                    
+                  
+                    $outputData | Export-Csv -Path $outputCsvFile -NoTypeInformation
+                    
+                    
+                    Write-Host "Processing complete. Data has been saved to the CSV file: $outputCsvFile"
+
+                        '''
+       
+       
+       LET Params = SELECT * from if(condition=RecursiveRun,then={SELECT "-r" as t from scope()},else={SELECT "" as t from scope()})  
+       LET Params2 =   SELECT * from if(condition=FileSuffix!="",then={SELECT '-s "'+FileSuffix+'"' as t from scope()},else={SELECT " " as t from scope()}) 
+       LET _ex <= SELECT * FROM execve(argv=["Powershell",  '& "'+DensityScoutResTool.String+'"','-pe -l ' + Density,'-p ' + Density,Params[0].t,Params2[0].t,'-o "'+DensityScoutResTXT.String+'"','"'+StartPosition+'"'])   
+       LET __PW <= SELECT * FROM execve(argv=["Powershell",  DesnParse ])
+       select * FROM parse_csv(filename=DensityScoutResCSV.String)
+       
