@@ -1,0 +1,57 @@
+name: Custom.Windows.GoldFinger.TGT.Analyzer
+description: |
+   This artifact is designed to execute the GoldFinger tool, developed by Yossi Sassi (available at https://github.com/YossiSassi/GoldFinger-Suspicious_TGT_Hunter on GitHub). Specifically tailored for security analysis, this tool targets Kerberos Ticket Granting Ticket (TGT) anomalies that may indicate suspicious or malicious activity within networked environments.
+
+    Functionality:
+
+    Upon activation, the artifact deploys GoldFinger on the specified client machine to meticulously scan and analyze Kerberos TGTs. After the scan, it automatically aggregates and formats the findings 
+    
+    Usage Scenario:
+
+    This artifact is invaluable for cybersecurity professionals and IT administrators seeking to enhance their security posture through proactive detection of unusual and potentially harmful authentication activities within their Windows network environments.
+author: David @ 10root cyber security
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
+type: CLIENT
+ 
+ 
+parameters:
+
+
+tools:
+  - name: GoldFinger
+    url: https://github.com/YossiSassi/GoldFinger-Suspicious_TGT_Hunter/raw/refs/heads/main/GoldFinger-EndPointTicketCollector.ps1
+  - name: GoldFingerMain
+    url: https://github.com/YossiSassi/GoldFinger-Suspicious_TGT_Hunter/raw/refs/heads/main/GoldFinger-Main.ps1
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows' 
+
+    query: |
+      LET TmpDir <= tempdir(remove_last='Y')
+      LET ToolGoldFinger <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="GoldFinger", IsExecutable=false, TemporaryOnly=TRUE)
+      LET GoldFingerMain <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="GoldFingerMain", IsExecutable=false, TemporaryOnly=TRUE)
+        
+       LET VeloTest <= path_join(
+           components=[TmpDir, 'VeloTest.txt'],
+           path_type='windows')        
+           
+      LET _ex <= SELECT * FROM execve(argv=["Powershell", "Set-ExecutionPolicy","Bypass"])
+      LET _Txt <= SELECT * FROM execve(argv=["Powershell",  '& "'+ToolGoldFinger[0].OSPath+'"',  " > ",'"'+VeloTest.String+'"' ])
+      LET _CSV <= SELECT * FROM execve(argv=["Powershell",  '& "'+GoldFingerMain[0].OSPath+'"',  " -TextFileToAnalyze ",'"'+VeloTest.String+'"' ])   
+
+      let __PW <= SELECT * FROM execve(argv=["Powershell",  '(Get-ChildItem -Path (Split-Path -Path "'+GoldFingerMain[0].OSPath+'") -Filter *.csv | Select-Object -ExpandProperty FullName)' ], sep="\r\n")
+      
+      let rowsPw <= SELECT Stdout from __PW where Stdout !=""
+      
+      let _ <= sleep(time=11)
+
+      let _Res <=SELECT * FROM foreach(row=rowsPw, query={
+      SELECT * FROM if(condition= Stdout!="" ,then={select * FROM parse_csv(filename=Stdout)},else={select "Please check the logs in Velociraptor for errors, as no file path was provided or an error occurred." as ErrorVelo from scope()})})
+      
+      select * from _Res
+        
+  
+  
