@@ -6,6 +6,7 @@ description: |
     The tool is effective for quickly highlighting files that could be associated with malware due to unusual density, especially useful in environments where rapid detection is critical. DensityScout is a lightweight, command-line utility that provides a detailed output of analyzed files, including their entropy scores, paths, and sizes. It’s suitable for experienced security professionals who need to triage or investigate systems for malware or anomalies without a full endpoint detection suite.    
     
     When used as an artifact in Velociraptor, DensityScout enables automated file entropy analysis across endpoints in a network, helping identify files with suspicious characteristics remotely and at scale. This integration allows for efficient detection and investigation of potential malware or anomalous files, leveraging Velociraptor's capabilities for centralized forensic analysis and response. The tool’s integration with Velociraptor is particularly useful for security teams looking to streamline malware hunting and forensic processes.
+    https://www.cert.at/en/downloads/software/software-densityscout
 
 # Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
 type: CLIENT
@@ -16,6 +17,7 @@ parameters:
     type: bool
   - name: Density 
     default: 0.1
+    description: "0.1 Recommended "
   - name: FileSuffix 
     default: ""
     description: "Filetypes you wish to scan write as exe,dll,cpl "
