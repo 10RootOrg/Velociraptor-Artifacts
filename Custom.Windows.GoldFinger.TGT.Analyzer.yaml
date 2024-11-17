@@ -8,7 +8,7 @@ description: |
     
     Usage Scenario:
 
-    This artifact is invaluable for cybersecurity professionals and IT administrators seeking to enhance their security posture through proactive detection of unusual and potentially harmful authentication activities within their Windows network environments.
+    This artifact is invaluable for cybersecurity professionals and IT administrators seeking to enhance their security posture through proactive detection of unusual and potentially harmful authentication activities within their Windows network environments, e.g Pass-The-Hash, Golden Ticket.
 author: David @ 10root cyber security
 # Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
 type: CLIENT
