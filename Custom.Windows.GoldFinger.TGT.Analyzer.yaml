@@ -42,7 +42,7 @@ sources:
       LET _Txt <= SELECT * FROM execve(argv=["Powershell",  '& "'+ToolGoldFinger[0].OSPath+'"',  " > ",'"'+VeloTest.String+'"' ])
       LET _CSV <= SELECT * FROM execve(argv=["Powershell",  '& "'+GoldFingerMain[0].OSPath+'"',  " -TextFileToAnalyze ",'"'+VeloTest.String+'"' ])   
 
-      let __PW <= SELECT * FROM execve(argv=["Powershell",  '(Get-ChildItem -Path (Split-Path -Path "'+GoldFingerMain[0].OSPath+'") -Filter *.csv | Select-Object -ExpandProperty FullName)' ], sep="\r\n")
+      let __PW <= SELECT * FROM execve(argv=["Powershell",  '(Get-ChildItem -Path (Split-Path -Path "'+GoldFingerMain[0].OSPath+'") -Filter "GoldFinger-KerberosTicketsCheck-Over_OFFLINE-ANALYSIS-Results*.csv" | Select-Object -ExpandProperty FullName)' ], sep="\r\n")
       
       let rowsPw <= SELECT Stdout from __PW where Stdout !=""
       
