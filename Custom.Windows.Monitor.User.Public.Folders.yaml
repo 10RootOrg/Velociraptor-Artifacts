@@ -1,0 +1,51 @@
+name: Custom.Windows.Monitor.User.Public.Folders
+description: |
+  **Description**:
+  This artifact monitors for new file downloads that occur after the artifact is enabled,
+  ignoring existing files in the download locations.
+  
+  **Use Cases**:
+  - Adversaries often exploit the C:\Users\Public directory to deploy malicious files.
+  
+  
+   For recursive search use "**"  
+  
+author: david @ 10Root Cyber Security
+type: CLIENT_EVENT
+parameters:
+  - name: downloadPaths
+    default: "C:\\Users\\Public\\**,"
+    description: Comma separated list of paths to monitor for downloads
+  - name: Frequency 
+    default: 60
+    description: Frequency of Search in Seconds
+
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows'
+    query: |
+      SELECT *
+      FROM foreach(
+         row={
+           SELECT UnixNano
+           FROM clock(period=int(int=Frequency))
+         },
+         query={
+              SELECT 
+                  OSPath as FullPath,
+                  Size,
+                  timestamp(string=ModTime) as ModTime,
+                  timestamp(epoch=now() - int(int=Frequency)) as OffsetTime,
+                  if(condition=Size < 100*1024*1024,
+                     then=hash(path=OSPath).SHA256,
+                     else="File too large to hash") as SHA256,
+                  Mode.String as Permissions,
+                  "New Download Detected" as Description      
+              FROM glob(globs=split(string=downloadPaths, sep=","))
+              WHERE NOT IsDir 
+                AND Size > 0
+                AND OffsetTime.Unix < ModTime.Unix
+                AND  log(message="The Event Is Running With The args of : IsDir-%v , OffsetTime-%v , ModTime.Sec=%v ",args=[IsDir,OffsetTime.Unix ,ModTime.Unix])
+         })
+  
