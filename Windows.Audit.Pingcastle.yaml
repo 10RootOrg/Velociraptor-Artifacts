@@ -1,4 +1,4 @@
-name: Windows.Forensic.Pingcastle
+name: Windows.Audit.Pingcastle
 description: |
    This Velociraptor artifact automates the execution of PingCastle, a powerful open-source tool used to audit the security posture of Microsoft Active Directory environments. It allows an analyst to remotely run a PingCastle health check and collect the detailed HTML report it generates. By leveraging this artifact, security teams can efficiently assess Active Directory for vulnerabilities and misconfigurations at scale directly from the Velociraptor console.
 
