@@ -1,0 +1,51 @@
+name: Windows.Forensic.Pingcastle
+description: |
+   This Velociraptor artifact automates the execution of PingCastle, a powerful open-source tool used to audit the security posture of Microsoft Active Directory environments. It allows an analyst to remotely run a PingCastle health check and collect the detailed HTML report it generates. By leveraging this artifact, security teams can efficiently assess Active Directory for vulnerabilities and misconfigurations at scale directly from the Velociraptor console.
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
+type: CLIENT
+
+author: David @ 10root cyber security
+tools:
+  - name: PingCastle
+    
+
+
+
+    
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows'
+
+    query: |
+       LET TmpDir <= tempdir(remove_last='Y')
+       
+       LET PingCastleZip <= SELECT FullPath
+         FROM Artifact.Generic.Utils.FetchBinary(ToolName="PingCastle",
+                                                 IsExecutable=FALSE,
+                                                 TemporaryOnly=TRUE)
+       
+       LET _ <= SELECT *
+         FROM unzip(filename=PingCastleZip.FullPath, output_directory=TmpDir)
+       
+       LET PingCastleResTool = path_join(components=[TmpDir, 'PingCastle.exe'],
+                                         path_type='windows')
+       
+       LET _exe <= SELECT *
+         FROM execve(
+           argv=["Powershell", '& "' + PingCastleResTool.String + '"', '--healthcheck --no-enum-limit'],
+           cwd=TmpDir)
+       
+       LET filelist <= SELECT OSPath
+         FROM glob(globs='**1000\\*.{xml,html}',
+                   root=TmpDir,
+                   accessor="file",
+                   recursion_callback="x=>NOT x.OSPath =~ '^/(proc|snap)'")
+         WHERE NOT IsDir
+          AND NOT IsLink
+               AND Size > 0
+       
+       SELECT *, upload(file=OSPath, name=OSPath) AS Upload
+       FROM filelist
+
+
