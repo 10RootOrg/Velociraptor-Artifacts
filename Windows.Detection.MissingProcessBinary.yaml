@@ -1,0 +1,98 @@
+name: Custom.Windows.Detection.MissingProcessBinary
+author: Yaniv Radunsky @ tenroot
+description: |
+  Detects running processes whose on-disk executable is missing or
+  whose Exe path is empty. This is a strong indicator of:
+
+    - Fileless / in-memory execution
+    - Binaries deleted after launch (timestomping cleanup)
+    - Process hollowing or injection
+
+  The artifact enumerates all running processes via pslist() and uses
+  the stat() function to verify whether the executable file exists on
+  disk. Processes with an empty Exe field or a non-existent binary
+  are flagged.
+
+  NOTE: Some legitimate system processes (e.g., System, Idle) will
+  have empty Exe paths. The ExcludeRegex parameter allows filtering
+  these out to reduce false positives.
+
+reference:
+  - https://attack.mitre.org/techniques/T1055/
+  - https://attack.mitre.org/techniques/T1070/004/
+  - https://attack.mitre.org/techniques/T1059/
+
+type: CLIENT
+
+# -- ATT&CK and DFIR metadata --------------------------------------------------
+# T1055       - Process Injection
+# T1055.012   - Process Hollowing
+# T1070.004   - Indicator Removal: File Deletion
+# T1059       - Command and Scripting Interpreter (fileless)
+
+parameters:
+  - name: ExcludeRegex
+    description: |
+      Regex of process names to exclude from results (case-insensitive).
+      Default excludes known Windows pseudo-processes and Hyper-V/WSL2
+      virtual memory processes that legitimately lack an on-disk binary.
+    type: regex
+    default: "^(System|Registry|Idle|Secure System|Memory Compression|vmmem.*)$"
+
+  - name: ExcludePid
+    description: |
+      List of PIDs to exclude (e.g., PID 0 and 4 are kernel objects).
+    type: int64
+    default: 0
+
+precondition: SELECT OS FROM info() WHERE OS = "windows"
+
+sources:
+  - query: |
+      -- Enumerate all running processes
+      LET processes = SELECT
+          Pid,
+          Ppid,
+          Name,
+          Exe,
+          CommandLine,
+          Username,
+          CreateTime
+      FROM pslist()
+      WHERE NOT Name =~ ExcludeRegex
+        AND Pid != ExcludePid
+        AND CreateTime > "2000-01-01"
+
+      -- Filter to processes with missing binaries
+      SELECT
+          Pid,
+          Ppid,
+          Name,
+          Exe,
+          CommandLine,
+          Username,
+          CreateTime,
+          -- Only call stat() when Exe is non-empty to avoid unnecessary work
+          if(condition=Exe, then=stat(filename=Exe)) AS ExeStat,
+          if(condition=Exe,
+             then="Binary not found on disk",
+             else="Empty Exe path") AS Reason
+      FROM processes
+      WHERE NOT Exe OR NOT stat(filename=Exe)
+
+column_types:
+  - name: CreateTime
+    type: timestamp
+
+# -- Artifact metadata ----------------------------------------------------------
+# Uncomment the following to tag in your environment:
+# metadata:
+#   tags:
+#     - Detection
+#     - Threat Hunting
+#   DFIRCategory: Process Execution
+#   ATTACK_Techniques:
+#     - T1055
+#     - T1055.012
+#     - T1070.004
+#     - T1059
