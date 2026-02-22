@@ -1,0 +1,202 @@
+name: Custom.Windows.CrowdStrike.FalconInstall
+description: |
+  Installs CrowdStrike Falcon sensor on Windows endpoints.
+
+  Requirements:
+  - Upload FalconSensor.exe to Tools as "CrowdStrikeFalconInstaller"
+  - Provide the CID from your CrowdStrike console
+
+  Watch the LOG tab for real-time progress!
+  Installation logs are uploaded after completion.
+
+author: Nof Levi + Claude
+
+type: CLIENT
+
+required_permissions:
+  - EXECVE
+  - FILESYSTEM_WRITE
+
+tools:
+  - name: CrowdStrikeFalconInstaller
+
+parameters:
+  - name: CID
+    description: CrowdStrike Customer ID (CID) - REQUIRED
+    type: string
+
+  - name: InstallToken
+    description: Installation token (if required)
+    type: string
+    default: ""
+
+  - name: Tags
+    description: Grouping tags (comma-separated)
+    type: string
+    default: ""
+
+precondition: SELECT OS From info() WHERE OS = 'windows'
+
+sources:
+  - name: InstallCrowdStrike
+    query: |
+      // Get hostname
+      LET HostInfo <= SELECT Hostname FROM info()
+
+      // Step 1: Check if already installed
+      LET _ <= log(message="========== CROWDSTRIKE FALCON INSTALLATION ==========")
+      LET _ <= log(message="Step 1: Checking for existing installation...")
+
+      LET already_installed = SELECT OSPath, Mtime
+        FROM glob(globs="C:\\Program Files\\CrowdStrike\\CSFalconService.exe")
+
+      LET _ <= if(condition=already_installed,
+        then=log(message="  [!] CrowdStrike is ALREADY INSTALLED at: " + str(str=already_installed[0].OSPath)),
+        else=log(message="  [OK] CrowdStrike not found - will proceed with installation"))
+
+      // Step 2: Download installer and copy to safe path (no spaces)
+      LET _ <= log(message="Step 2: Fetching installer from Velociraptor server...")
+      LET TempInstaller <= "C:\\Windows\\Temp\\FalconInstaller.exe"
+
+      LET installer <= SELECT OSPath
+        FROM Artifact.Generic.Utils.FetchBinary(ToolName="CrowdStrikeFalconInstaller")
+
+      LET _ <= if(condition=installer,
+        then=log(message="  [OK] Downloaded to: " + str(str=installer[0].OSPath)),
+        else=log(message="  [ERROR] Failed to download installer!"))
+
+      // Copy to temp path without spaces
+      LET _ <= if(condition=installer,
+        then=copy(filename=installer[0].OSPath, dest=TempInstaller))
+
+      LET _ <= if(condition=installer,
+        then=log(message="  [OK] Copied to: " + TempInstaller))
+
+      // Step 3: Build arguments
+      LET _ <= log(message="Step 3: Building installation arguments...")
+      LET CIDArg <= "CID=" + CID
+      LET TokenArg <= if(condition=InstallToken, then="ProvToken=" + InstallToken, else="")
+      LET TagsArg <= if(condition=Tags, then="GROUPING_TAGS=" + Tags, else="")
+      LET _ <= log(message="  CID: " + CID)
+      LET _ <= log(message="  Token: " + if(condition=InstallToken, then="[PROVIDED]", else="[NOT SET]"))
+      LET _ <= log(message="  Tags: " + if(condition=Tags, then=Tags, else="[NOT SET]"))
+
+      // Step 4: Run installation
+      LET _ <= log(message="Step 4: Running installation...")
+      LET _ <= if(condition=already_installed,
+        then=log(message="  [SKIP] Skipping - already installed"),
+        else=log(message="  [RUN] Executing installer..."))
+
+      // Run installer from temp path (no spaces)
+      LET install_result <= SELECT * FROM if(
+        condition=(NOT already_installed AND installer),
+        then={
+          SELECT * FROM execve(argv=[
+            TempInstaller,
+            "/install",
+            "/quiet",
+            "/norestart",
+            CIDArg,
+            TokenArg,
+            TagsArg
+          ])
+        })
+
+      LET _ <= if(condition=install_result,
+        then=log(message="  [DONE] Installation finished with exit code: " + str(str=install_result[0].ReturnCode)),
+        else=log(message="  [INFO] Installation skipped or not needed"))
+
+      // Step 5: Verify
+      LET _ <= log(message="Step 5: Verifying installation...")
+      LET _ <= log(message="  Waiting 5 seconds for service to register...")
+      LET _ <= sleep(time=5)
+
+      LET service_check = SELECT Name, State, StartMode
+        FROM wmi(query="SELECT Name, State, StartMode FROM Win32_Service WHERE Name = 'CSFalconService'")
+
+      LET file_check = SELECT OSPath
+        FROM glob(globs="C:\\Program Files\\CrowdStrike\\CSFalconService.exe")
+
+      LET _ <= if(condition=service_check,
+        then=log(message="  [SUCCESS] Service found: " + service_check[0].Name + " | State: " + service_check[0].State),
+        else=if(condition=file_check,
+          then=log(message="  [PENDING] Files installed but service not yet registered"),
+          else=log(message="  [WARNING] Installation may have failed - no files found")))
+
+      LET _ <= log(message="========== INSTALLATION COMPLETE ==========")
+
+      // Find CrowdStrike's native log file
+      LET cs_log = SELECT OSPath, Size, Mtime
+        FROM glob(globs="C:\\Users\\*\\AppData\\Local\\Temp\\CrowdStrike Windows Sensor_*.log")
+        ORDER BY Mtime DESC
+        LIMIT 1
+
+      LET _ <= if(condition=cs_log,
+        then=log(message="  [LOG] Found CrowdStrike log: " + str(str=cs_log[0].OSPath)))
+
+      // Return final results
+      SELECT
+        HostInfo[0].Hostname AS Hostname,
+        if(condition=already_installed, then="ALREADY_INSTALLED",
+           else=if(condition=service_check, then="SUCCESS",
+                   else=if(condition=file_check, then="PENDING_REBOOT", else="FAILED"))) AS Status,
+        if(condition=install_result, then=install_result[0].ReturnCode, else="N/A") AS ExitCode,
+        if(condition=install_result, then=install_result[0].Stdout, else="") AS Stdout,
+        if(condition=install_result, then=install_result[0].Stderr, else="") AS Stderr,
+        if(condition=service_check, then=service_check[0].State, else="NOT_FOUND") AS ServiceState,
+        if(condition=cs_log, then=str(str=cs_log[0].OSPath), else="NOT_FOUND") AS CrowdStrikeLogPath,
+        now() AS CompletedAt
+      FROM scope()
+
+  - name: InstallationLog
+    query: |
+      // Read CrowdStrike's native installation log
+      LET HostInfo <= SELECT Hostname FROM info()
+      LET CSLogPattern <= "C:\\Users\\*\\AppData\\Local\\Temp\\CrowdStrike Windows Sensor_*.log"
+
+      LET logs = SELECT OSPath, Size, timestamp(epoch=Mtime) AS Modified
+        FROM glob(globs=CSLogPattern)
+        ORDER BY Modified DESC
+        LIMIT 1
+
+      SELECT * FROM foreach(row=logs, query={
+        SELECT
+          HostInfo[0].Hostname AS Hostname,
+          OSPath AS LogFile,
+          Size,
+          Modified,
+          read_file(filename=OSPath, length=1000000) AS LogContent
+        FROM scope()
+      })
+
+  - name: ServiceStatus
+    query: |
+      SELECT Name, State, StartMode, ProcessId
+      FROM wmi(query="SELECT Name, State, StartMode, ProcessId FROM Win32_Service WHERE Name = 'CSFalconService'")
+
+  - name: InstalledFiles
+    query: |
+      SELECT OSPath, Size, timestamp(epoch=Mtime) AS Modified
+      FROM glob(globs="C:\\Program Files\\CrowdStrike\\**")
+      WHERE NOT IsDir
+
+  - name: UploadLog
+    query: |
+      // Upload CrowdStrike's native installation log
+      LET HostInfo <= SELECT Hostname FROM info()
+      LET CSLogPattern <= "C:\\Users\\*\\AppData\\Local\\Temp\\CrowdStrike Windows Sensor_*.log"
+
+      SELECT * FROM foreach(
+        row={
+          SELECT OSPath, Size, Mtime FROM glob(globs=CSLogPattern)
+          ORDER BY Mtime DESC LIMIT 1
+        },
+        query={
+          SELECT
+            HostInfo[0].Hostname AS Hostname,
+            OSPath,
+            Size,
+            timestamp(epoch=Mtime) AS Modified,
+            upload(file=OSPath) AS Upload
+          FROM scope()
+        })
