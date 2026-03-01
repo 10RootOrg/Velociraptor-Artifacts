@@ -1,0 +1,226 @@
+name: Linux.Storage.RemovableDevices
+description: |
+  Enumerates removable storage devices that are currently connected to
+  or have historically been connected to a Linux endpoint. This is useful
+  for identifying USB thumb drives, external hard drives, SD cards, and
+  other removable media.
+
+  The artifact collects from three complementary sources:
+
+  **Source 1 — CurrentDevices:** Queries /sys/block/ to enumerate
+  currently attached block devices whose `removable` flag is set to 1.
+  Enriches each device with vendor, model, serial, and size from sysfs
+  attributes. This source is live-state only.
+
+  **Source 2 — JournalHistory:** Parses the systemd journal (journalctl)
+  for kernel-level USB storage attach and detach events. This provides a
+  historical view of all USB mass storage devices that have been
+  connected, including timestamps. Requires systemd-journald.
+
+  **Source 3 — SyslogHistory:** Falls back to parsing /var/log/syslog,
+  /var/log/kern.log, or /var/log/messages for USB storage events on
+  systems without systemd or where journal persistence is disabled.
+
+  ## Assumptions
+  - sysfs is mounted at /sys (standard on all modern Linux).
+  - For JournalHistory, systemd-journald is running and journalctl is
+    available. If journal persistence is disabled, only current-boot
+    entries will be present.
+  - For SyslogHistory, log files exist at the specified paths and have
+    not been rotated beyond retention.
+  - Serial numbers may not be present for all devices (some cheap
+    USB sticks omit them).
+
+  ## MITRE ATT&CK
+  - **T1025** — Data from Removable Media
+  - **T1052.001** — Exfiltration Over Physical Medium: Exfiltration
+    over USB
+  - **T1091** — Replication Through Removable Media
+
+  ## DFIR Category
+  - Device Enumeration
+  - Data Exfiltration Assessment
+  - Insider Threat Triage
+
+author: Maya Zilberman & Yaniv Radunsky
+reference:
+  - https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-block
+  - https://www.freedesktop.org/software/systemd/man/journalctl.html
+
+type: CLIENT
+
+precondition: SELECT OS FROM info() WHERE OS = 'linux'
+
+implied_permissions:
+  - EXECVE
+
+parameters:
+  # ---------- CurrentDevices parameters ----------
+  - name: SysBlockGlob
+    description: |
+      Glob pattern to enumerate block devices in sysfs. Default covers
+      sd* (SCSI/USB) and mmcblk* (SD cards). Adjust if non-standard
+      device naming is in use.
+    type: string
+    default: "/sys/block/{sd*,mmcblk*}"
+
+  # ---------- JournalHistory parameters ----------
+  - name: JournalSince
+    description: |
+      How far back to search the systemd journal. Uses journalctl
+      --since syntax (e.g., "7 days ago", "2024-01-01"). An empty
+      string means no lower bound (searches entire available journal).
+    type: string
+    default: "90 days ago"
+
+  - name: JournalGrepPattern
+    description: |
+      Grep pattern passed to journalctl -g to pre-filter USB storage
+      events at the journal level for performance. This is a PCRE
+      pattern.
+    type: string
+    default: "usb-storage|USB Mass Storage|New USB device found|SerialNumber:"
+
+  # ---------- SyslogHistory parameters ----------
+  - name: SyslogPaths
+    description: |
+      Glob pattern for syslog/kernel log files to search for USB events.
+      Includes common locations and rotated .gz variants are NOT parsed
+      (plain text only for performance).
+    type: string
+    default: "/var/log/{syslog,kern.log,messages}"
+
+  - name: SyslogUSBRegex
+    description: |
+      Regex to match USB storage-related lines in syslog files. Applied
+      as a WHERE filter on each line.
+    type: regex
+    default: "usb-storage|USB Mass Storage|New USB device found|SerialNumber:|removable disk"
+
+  # ---------- General ----------
+  - name: MaxJournalRows
+    description: |
+      Safety limit on number of journal entries returned to prevent
+      runaway collection on busy systems.
+    type: int
+    default: 50000
+
+  - name: MaxSyslogRows
+    description: |
+      Safety limit on number of syslog lines returned.
+    type: int
+    default: 50000
+
+sources:
+  # ================================================================
+  # Source 1: Currently connected removable block devices via sysfs
+  # ================================================================
+  - name: CurrentDevices
+    description: |
+      Enumerates currently attached removable block devices by reading
+      sysfs attributes under /sys/block/. Only devices with the
+      "removable" flag set to 1 are included.
+    query: |
+      // Helper: safely read a single sysfs attribute file, trimming
+      // whitespace. Returns empty string on error.
+      LET _read_attr(base, attr) = strip(string=
+        read_file(filename=base + "/" + attr, length=256) || "")
+
+      // Enumerate candidate block devices matching the glob pattern.
+      LET _block_devices = SELECT OSPath,
+          Name
+      FROM glob(globs=SysBlockGlob)
+
+      // Filter to removable=1 and enrich with sysfs metadata.
+      SELECT
+          Name AS DeviceName,
+          "/dev/" + Name AS DevicePath,
+          _read_attr(base=str(str=OSPath), attr="device/vendor") AS Vendor,
+          _read_attr(base=str(str=OSPath), attr="device/model") AS Model,
+          _read_attr(base=str(str=OSPath), attr="device/serial") ||
+            _read_attr(base=str(str=OSPath), attr="device/../../serial") AS Serial,
+          atoi(string=_read_attr(base=str(str=OSPath), attr="size")) * 512 AS SizeBytes,
+          _read_attr(base=str(str=OSPath), attr="device/type") AS DeviceType,
+          _read_attr(base=str(str=OSPath), attr="device/state") AS State,
+          _read_attr(base=str(str=OSPath), attr="removable") AS RemovableFlag,
+          OSPath AS SysfsPath
+      FROM _block_devices
+      WHERE _read_attr(base=str(str=OSPath), attr="removable") = "1"
+
+  # ================================================================
+  # Source 2: Historical USB storage events from systemd journal
+  # ================================================================
+  - name: JournalHistory
+    description: |
+      Parses the systemd journal for kernel-level USB mass storage
+      attach/detach events. Provides historical device connection
+      timestamps. Requires journalctl to be available.
+    query: |
+      // Build the journalctl command with conditional --since.
+      LET _since_arg = if(
+          condition=JournalSince,
+          then=format(format="--since=%v", args=[JournalSince]),
+          else="")
+
+      // Run journalctl, splitting stdout into one row per line.
+      LET _journal_lines = SELECT Stdout AS Line
+      FROM execve(argv=filter(list=[
+          "journalctl", "--no-pager", "-k", "--output=short-iso",
+          _since_arg,
+          "-g", JournalGrepPattern
+      ], regex=".+"), sep="\n")
+      WHERE Line
+
+      LET _journal_parsed = SELECT
+          Line,
+          parse_string_with_regex(
+              string=Line,
+              regex="^(?P<Timestamp>\\S+)\\s+(?P<Hostname>\\S+)\\s+(?P<Source>\\S+):\\s+(?P<Message>.+)$"
+          ) AS Parsed,
+          count() AS _RowNum
+      FROM _journal_lines
+
+      SELECT Line, Parsed
+      FROM _journal_parsed
+      WHERE _RowNum <= MaxJournalRows
+
+  # ================================================================
+  # Source 3: Syslog-based fallback for non-systemd or legacy systems
+  # ================================================================
+  - name: SyslogHistory
+    description: |
+      Parses traditional syslog/kern.log files for USB storage events.
+      Use this source on systems without systemd-journald or where
+      journal persistence is not enabled.
+    query: |
+      LET _log_files = SELECT OSPath
+      FROM glob(globs=SyslogPaths)
+
+      LET _log_lines = SELECT OSPath AS SourceFile, Line
+      FROM foreach(
+          row=_log_files,
+          query={
+              SELECT OSPath, Line
+              FROM parse_lines(filename=OSPath)
+          })
+      WHERE Line =~ SyslogUSBRegex
+
+      LET _syslog_parsed = SELECT
+          SourceFile,
+          Line,
+          parse_string_with_regex(
+              string=Line,
+              regex="^(?P<Timestamp>\\w+\\s+\\d+\\s+[\\d:]+)\\s+(?P<Hostname>\\S+)\\s+(?P<Source>[^:]+):\\s+(?P<Message>.+)$"
+          ) AS Parsed,
+          count() AS _RowNum
+      FROM _log_lines
+
+      SELECT SourceFile, Line, Parsed
+      FROM _syslog_parsed
+      WHERE _RowNum <= MaxSyslogRows
+
+column_types:
+  - name: SizeBytes
+    type: int
+  - name: Timestamp
+    type: timestamp
