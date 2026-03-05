@@ -1,4 +1,8 @@
 name: Sigma.Windows.Hayabusa.Monitoring
+description: |
+  Monitors Windows Event Logs in real-time using Hayabusa Sigma rules.
+  Detects suspicious activity based on configurable rule levels (Critical, High, All)
+  and rule statuses. Streams alerts directly from the endpoint as events occur.
 type: CLIENT_EVENT
 parameters:
   - name: ROOT
